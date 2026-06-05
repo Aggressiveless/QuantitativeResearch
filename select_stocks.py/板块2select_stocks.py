@@ -97,6 +97,7 @@ def get_all_sectors():
             {'代码': '000001', '名称': '平安银行', '板块': '银行'},
             {'代码': '600016', '名称': '民生银行', '板块': '银行'},
         ],
+        # ========== 新增板块 ==========
         '机器人': [
             {'代码': '300024', '名称': '机器人', '板块': '机器人'},
             {'代码': '002747', '名称': '埃斯顿', '板块': '机器人'},
@@ -133,12 +134,14 @@ def get_all_sectors():
     }
 
 def get_stocks_by_sector(sector_name):
+    """根据板块名称获取股票列表"""
     sectors = get_all_sectors()
     if sector_name in sectors:
         return sectors[sector_name]
     return []
 
 def list_available_sectors():
+    """列出所有可用板块"""
     sectors = get_all_sectors()
     print("\n📋 可用板块列表：")
     print("-" * 50)
@@ -146,41 +149,22 @@ def list_available_sectors():
         print(f"   {i:2d}. {name}（{len(sectors[name])}只）")
     print("-" * 50)
 
-# ========== 获取实时价格 ==========
-def get_realtime_price(code):
-    """获取股票实时价格"""
-    try:
-        import akshare as ak
-        spot = ak.stock_zh_a_spot_em()
-        row = spot[spot['代码'] == code]
-        if not row.empty:
-            price = row['最新价'].values[0]
-            if price != '-' and price is not None:
-                return float(price)
-    except:
-        pass
-    return None
-
 # ========== 计算技术指标 ==========
-def calc_technical_indicators(df, current_price):
+def calc_technical_indicators(df):
     if len(df) < 20:
         return None, None, None
     
     close = df['close'].values
-    # 使用实时价格替换最新收盘价
-    pct_20d = (current_price - close[-20]) / close[-20] * 100
-    
-    # 计算是否有涨停（基于历史数据）
+    pct_20d = (close[-1] - close[-20]) / close[-20] * 100
     daily_ret = []
     for i in range(1, min(21, len(close))):
         ret = (close[-i] - close[-i-1]) / close[-i-1] * 100
         daily_ret.append(ret)
     has_limit_up = any(r >= 9.8 for r in daily_ret)
-    
-    return pct_20d, has_limit_up, current_price
+    return pct_20d, has_limit_up, close[-1]
 
 # ========== 识别主力偷偷进场 ==========
-def detect_main_buying(df, current_price):
+def detect_main_buying(df):
     if len(df) < 20:
         return False, "数据不足", None
     
@@ -192,6 +176,7 @@ def detect_main_buying(df, current_price):
     signals = []
     is_buying = False
     
+    current_price = close[-1]
     price_position = (current_price - min(close[-60:])) / (max(close[-60:]) - min(close[-60:])) if max(close[-60:]) - min(close[-60:]) > 0 else 0.5
     vol_ratio = volume[-1] / volume[-20:].mean() if volume[-20:].mean() > 0 else 1
     
@@ -209,7 +194,7 @@ def detect_main_buying(df, current_price):
         is_buying = True
     
     vol_shrink = volume[-5:].mean() < volume[-20:].mean() * 0.8
-    price_stable = abs(current_price - close[-5]) / close[-5] * 100 < 3
+    price_stable = abs(close[-1] - close[-5]) / close[-5] * 100 < 3
     if vol_shrink and price_stable and price_position < 0.5:
         signals.append("🔍 缩量企稳，洗盘结束")
         is_buying = True
@@ -254,7 +239,7 @@ def detect_main_buying(df, current_price):
         return False, "无主力进场信号", None
 
 # ========== 识别主力出货信号 ==========
-def detect_main_selling(df, current_price):
+def detect_main_selling(df):
     if len(df) < 20:
         return False, "数据不足"
     
@@ -266,7 +251,7 @@ def detect_main_selling(df, current_price):
     signals = []
     is_selling = False
     
-    pct_1d = (current_price - close[-2]) / close[-2] * 100 if len(close) > 1 else 0
+    pct_1d = (close[-1] - close[-2]) / close[-2] * 100 if len(close) > 1 else 0
     vol_ratio = volume[-1] / volume[-20:].mean() if volume[-20:].mean() > 0 else 1
     
     if pct_1d < -3 and vol_ratio > 1.5:
@@ -284,7 +269,7 @@ def detect_main_selling(df, current_price):
     else:
         return False, "无主力出货信号"
 
-# ========== 获取实时数据（市值、换手率、量比） ==========
+# ========== 获取实时数据 ==========
 def get_stock_detail(code):
     try:
         import akshare as ak
@@ -355,11 +340,9 @@ def get_stock_history(code):
     
     if len(data) < 20:
         return None
-    
     df = pd.DataFrame(data, columns=['date', 'open', 'high', 'low', 'close', 'volume'])
     for col in ['close', 'open', 'high', 'low', 'volume']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
-    
     return df
 
 # ========== 扫描股票 ==========
@@ -376,40 +359,34 @@ def scan_stocks(stock_list, index_ret, price_min=0, price_max=20):
         name = stock['名称']
         sector = stock.get('板块', '未知')
         
-        # 获取实时价格
-        current_price = get_realtime_price(code)
-        if current_price is None:
-            print(f"⏭️ 跳过 {code} {name}（无法获取实时价格）")
-            continue
-        
-        # 价格区间过滤
-        if current_price < price_min or current_price > price_max:
-            print(f"⏭️ 跳过 {code} {name}（价格 {current_price}，不在 {price_min}-{price_max} 区间）")
-            continue
-        
-        print(f"📊 扫描 {i+1}/{total}: {code} {name} ({sector}) - 实时价格: {current_price}")
-        
-        # 获取历史数据
         df = get_stock_history(code)
         if df is None:
             continue
         
-        # 计算指标（使用实时价格）
-        pct_20d, has_limit_up, _ = calc_technical_indicators(df, current_price)
+        latest_close = df['close'].iloc[-1]
+        
+        # 价格区间过滤
+        if latest_close < price_min or latest_close > price_max:
+            print(f"⏭️ 跳过 {code} {name}（价格 {latest_close}，不在 {price_min}-{price_max} 区间）")
+            continue
+        
+        print(f"📊 扫描 {i+1}/{total}: {code} {name} ({sector}) - 价格: {latest_close}")
+        
+        pct_20d, has_limit_up, _ = calc_technical_indicators(df)
         if pct_20d is None:
             continue
         
         detail = get_stock_detail(code)
         
         # 检查主力偷偷进场
-        is_buying, buying_desc, price_range = detect_main_buying(df, current_price)
+        is_buying, buying_desc, price_range = detect_main_buying(df)
         if is_buying:
             price_range_str = f"{price_range[0]} - {price_range[1]}" if price_range else "待定"
             buying_results.append({
                 '代码': code,
                 '名称': name,
                 '板块': sector,
-                '价格': current_price,
+                '价格': latest_close,
                 '进场信号': buying_desc,
                 '建议区间': price_range_str,
                 '20日涨幅%': round(pct_20d, 2)
@@ -417,13 +394,13 @@ def scan_stocks(stock_list, index_ret, price_min=0, price_max=20):
             print(f"   🔍 检测到主力进场")
         
         # 检查主力出货信号
-        is_selling, sell_desc = detect_main_selling(df, current_price)
+        is_selling, sell_desc = detect_main_selling(df)
         if is_selling:
             sell_results.append({
                 '代码': code,
                 '名称': name,
                 '板块': sector,
-                '价格': current_price,
+                '价格': latest_close,
                 '出货信号': sell_desc,
                 '20日涨幅%': round(pct_20d, 2)
             })
@@ -440,7 +417,7 @@ def scan_stocks(stock_list, index_ret, price_min=0, price_max=20):
                     '代码': code,
                     '名称': name,
                     '板块': sector,
-                    '价格': current_price,
+                    '价格': latest_close,
                     '20日涨幅%': round(pct_20d, 2),
                     '市值(亿)': round(market_cap, 1),
                     '换手率%': turnover,
@@ -454,14 +431,16 @@ def scan_stocks(stock_list, index_ret, price_min=0, price_max=20):
 
 # ========== 主程序 ==========
 if __name__ == "__main__":
-    print("🚀 板块选股系统启动（实时价格版）")
+    print("🚀 板块选股系统启动")
     print("=" * 70)
     print("功能：选择板块 + 价格区间过滤")
     print("识别：主力偷偷进场 | 经典买入条件 | 主力出货预警")
     print("=" * 70)
     
+    # 显示可用板块
     list_available_sectors()
     
+    # 用户选择板块
     while True:
         sector_input = input("\n请输入板块名称：").strip()
         stock_list = get_stocks_by_sector(sector_input)
@@ -472,6 +451,7 @@ if __name__ == "__main__":
             print(f"❌ 未找到板块「{sector_input}」，请重新输入")
             list_available_sectors()
     
+    # 价格区间输入
     print("\n💰 价格区间过滤（扫描 0-20 元股票）")
     price_min = 0
     price_max = 20
@@ -498,6 +478,7 @@ if __name__ == "__main__":
     
     buy_results, buying_results, sell_results = scan_stocks(stock_list, index_ret, price_min, price_max)
     
+    # 输出主力偷偷进场
     print("\n" + "=" * 70)
     print(f"🔍 【{sector_input}板块 - 主力偷偷进场】共 {len(buying_results)} 只股票")
     print("=" * 70)
@@ -513,6 +494,7 @@ if __name__ == "__main__":
     else:
         print("暂无检测到主力进场信号")
     
+    # 输出经典买入候选
     print("\n" + "=" * 70)
     print(f"🎯 【{sector_input}板块 - 经典买入候选】共 {len(buy_results)} 只股票")
     print("=" * 70)
@@ -525,6 +507,7 @@ if __name__ == "__main__":
     else:
         print("暂无符合条件的买入标的")
     
+    # 输出主力出货预警
     print("\n" + "=" * 70)
     print(f"🔻 【{sector_input}板块 - 主力出货预警】共 {len(sell_results)} 只股票")
     print("=" * 70)
@@ -544,4 +527,3 @@ if __name__ == "__main__":
     print("⚠️ 风险提示：以上结果仅供参考，不构成投资建议")
     print("   投资有风险，入市需谨慎")
     print("=" * 70)
-    
